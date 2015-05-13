@@ -48,6 +48,7 @@
 #include <crystal.h>
 #include <image.h>
 #include <utils.h>
+#include <render.h>
 
 #include "hdfsee-render.h"
 
@@ -2129,7 +2130,7 @@ static int draw_detector(cairo_surface_t *surf, struct image *image,
 	cr = cairo_create(surf);
 
 	unpack_slab(image);
-	pixbufs = render_panels(image, 1, 0, 1, &n_pixbufs);
+	pixbufs = render_panels(image, 1, SCALE_GEOPTIMISER, 1, &n_pixbufs);
 
 	/* Blank grey background */
 	cairo_rectangle(cr, 0.0, 0.0, rect.width, rect.height);
@@ -2171,45 +2172,41 @@ static int draw_detector(cairo_surface_t *surf, struct image *image,
 }
 
 
-static int save_data_to_png(char * filename, struct detector* det,
+static int save_data_to_png(char *filename, struct detector *det,
                             int max_fs, int max_ss, double default_fill_value,
                             double *data)
 {
-	struct image *im;
+	struct image im;
 	int i;
 	struct rectangle rect;
+	GdkPixbuf *col_scale;
+	cairo_t *cr;
 
 	cairo_status_t r;
 	cairo_surface_t *surf;
 
-	im = malloc(sizeof(struct image));
-	if ( im == NULL ) {
+	im.data = malloc((max_fs+1)*(max_ss+1)*sizeof(float));
+	if ( im.data == NULL ) {
 		ERROR("Failed to allocate memory to save data.\n");
 		return 1;
 	}
-	im->data = malloc((max_fs+1)*(max_ss+1)*sizeof(float));
-	if ( im->data == NULL ) {
-		ERROR("Failed to allocate memory to save data.\n");
-		free(im);
-		return 1;
-	}
-	im->det = det;
-	im->width = max_fs+1;
-	im->height = max_ss+1;
-	im->flags = NULL;
+	im.det = det;
+	im.width = max_fs+1;
+	im.height = max_ss+1;
+	im.flags = NULL;
 
 	for ( i=0; i<(max_fs+1)*(max_ss+1); i++) {
 		if ( data[i] == default_fill_value ) {
-			im->data[i] = 0.0;
+			im.data[i] = 0.0;
 		} else if ( data[i] > 1.0) {
-			im->data[i] = 1.0;
+			im.data[i] = 1.0;
 		} else {
-			im->data[i] = (float)data[i];
+			im.data[i] = (float)data[i];
 		}
-		im->data[i] *= 10.0; /* render_panels sets this as max */
+		im.data[i] *= 10.0; /* render_panels sets this as max */
 	}
 
-	get_pixel_extents(im->det, &rect.min_x, &rect.min_y, &rect.max_x,
+	get_pixel_extents(im.det, &rect.min_x, &rect.min_y, &rect.max_x,
 	                  &rect.max_y);
 
 	if (rect.min_x > 0.0) rect.min_x = 0.0;
@@ -2217,26 +2214,34 @@ static int save_data_to_png(char * filename, struct detector* det,
 	if (rect.min_y > 0.0) rect.min_y = 0.0;
 	if (rect.max_y < 0.0) rect.max_y = 0.0;
 
-	rect.width = (rect.max_x - rect.min_x);
-	rect.height = (rect.max_y - rect.min_y);
+	rect.width = rect.max_x - rect.min_x;
+	rect.height = rect.max_y - rect.min_y;
 
 	/* Add a thin border */
 	rect.width += 2.0;
 	rect.height += 2.0;
-	surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, rect.width,
+	surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, rect.width + 20,
 	                                  rect.height);
 
-	draw_detector(surf, im, rect);
+	draw_detector(surf, &im, rect);
+
+	col_scale = render_get_colour_scale(20, rect.height, SCALE_GEOPTIMISER);
+
+	cr = cairo_create(surf);
+	cairo_identity_matrix(cr);
+	cairo_translate(cr, rect.width, 0.0);
+	cairo_rectangle(cr, 0.0, 0.0, 20.0, rect.height);
+	gdk_cairo_set_source_pixbuf(cr, col_scale, 0.0, 0.0);
+	cairo_fill(cr);
+	cairo_destroy(cr);
 
 	r = cairo_surface_write_to_png(surf, filename);
 	if (r != CAIRO_STATUS_SUCCESS) {
-		free(im->data);
-		free(im);
+		free(im.data);
 		return 1;
 	}
 
-	free(im->data);
-	free(im);
+	free(im.data);
 
 	return 0;
 }
@@ -2296,12 +2301,86 @@ static void compute_abs_displ(struct rg_collection *connected,
 }
 
 
+int check_and_enforce_cspad_dist(struct detector *det, int enforce)
+{
+	int np = 0;
+	int num_errors_found = 0;
+
+	double dist_to_check = 197.0;
+	double tol = 0.2;
+
+	for ( np=0; np<det->n_panels; np = np+2 ) {
+
+		double dist2;
+
+		struct panel *ep = &det->panels[np];
+		struct panel *op = &det->panels[np+1];
+
+		dist2 = (( ep->cnx - op->cnx )*( ep->cnx - op->cnx ) +
+			 ( ep->cny - op->cny )*( ep->cny - op->cny ));
+
+		if ( dist2 > (dist_to_check+tol)*(dist_to_check+tol) ||
+		     dist2 < (dist_to_check-tol)*(dist_to_check-tol) ) {
+
+			num_errors_found += 1;
+
+			STATUS("Warning: distance between panels %s and %s "
+			       "is outside acceptable margins.\n", ep->name,
+			       op->name);
+
+			if ( enforce ) {
+
+				double new_op_cx, new_op_cy;
+
+				new_op_cx = ep->cnx + ep->fsx*dist_to_check;
+				new_op_cy = ep->cny + ep->fsy*dist_to_check;
+
+				op->cnx = new_op_cx;
+				op->cny = new_op_cy;
+
+				STATUS("Enforcing distance....\n");
+			}
+
+		}
+
+		if ( ep->fsx != op->fsx || ep->ssx != op->ssx ||
+		     ep->fsy != op->fsy || ep->ssx != op->ssx ) {
+
+			num_errors_found += 1;
+
+			STATUS("Warning: relative orientation between panels "
+			       "%s and %s is incorrect.\n", ep->name, op->name);
+
+			if ( enforce ) {
+
+				STATUS("Enforcing relative orientation....\n");
+
+				op->fsx = ep->fsx;
+				op->ssx = ep->ssx;
+				op->fsy = ep->fsy;
+				op->ssy = ep->ssy;
+
+				op->xfs = ep->xfs;
+				op->xss = ep->xss;
+				op->yfs = ep->yfs;
+				op->yss = ep->yss;
+			}
+
+		}
+
+        }
+        return num_errors_found;
+}
+
+
+
 int optimize_geometry(char *infile, char *outfile, char *geometry_filename,
                       struct detector *det, struct rg_collection* quadrants,
                       struct rg_collection* connected,
                       int min_num_peaks_per_pixel, int min_num_peaks_per_panel,
                       int only_best_distance, int nostretch,
 		      int individual_coffset, int error_maps,
+		      int enforce_cspad_layout, int no_cspad,
 		      double max_peak_dist, const char *command_line)
 {
 	int num_pix_in_slab;
@@ -2312,6 +2391,7 @@ int optimize_geometry(char *infile, char *outfile, char *geometry_filename,
 	int ret1, ret2;
 	int ret;
 	int write_ret;
+	int maybe_cspad = 0;
 
 	int *num_pix_displ;
 
@@ -2350,6 +2430,55 @@ int optimize_geometry(char *infile, char *outfile, char *geometry_filename,
 	       min_num_peaks_per_pixel);
 	STATUS("Minimum number of measurements for panel for accurate estimation "
 	       "of position/orientation: %i\n", min_num_peaks_per_panel);
+
+	if ( det->n_panels == 64 ) {
+		maybe_cspad = 1;
+	}
+
+	if ( maybe_cspad && !no_cspad ) {
+
+		int num_errors = 0;
+
+		STATUS("It looks like the detector is a CSPAD. "
+		       "Checking relative distance and orientation of "
+		       "connected ASICS.\n");
+		STATUS("If the detector is not a CSPAD, please rerun the "
+		       "program with the --no-cspad option.\n");
+		if ( enforce_cspad_layout ) {
+			STATUS("Enforcing CSPAD layout...\n");
+		}
+
+		num_errors = check_and_enforce_cspad_dist(det,
+							  enforce_cspad_layout);
+
+		if ( enforce_cspad_layout ) {
+
+			int geom_wr;
+
+			STATUS("Saving geometry with enforced CSPAD layout.\n"
+			       "Please restart geometry optimization using the "
+			       "optimized geometry from this run as input geometry "
+			       "file.\n");
+			geom_wr = write_detector_geometry_2(geometry_filename,
+							    outfile, det,
+							    command_line, 1);
+			if ( geom_wr != 0 ) {
+				ERROR("Error in writing output geometry file.\n");
+				return 1;
+			}
+			STATUS("All done!\n");
+			return 0;
+		}
+
+		if ( !enforce_cspad_layout && num_errors > 0 ) {
+			ERROR("Relative distance and orientation of connected "
+			      "ASICS do not respect the CSPAD layout.\n"
+			      "Geometry optimization cannot continue.\n"
+			      "Please rerun the program with the "
+			      "--enforce-cspad-layout option.\n");
+			return 1;
+		}
+	}
 
 	pattern_list = read_patterns_from_steam_file(infile, det);
 	if ( pattern_list->n_patterns < 1 ) {
@@ -2711,8 +2840,10 @@ int main(int argc, char *argv[])
 	int min_num_peaks_per_pixel = 3;
 	int min_num_peaks_per_panel = 100;
 	int only_best_distance = 0;
+	int enforce_cspad_layout = 0;
 	int nostretch = 0;
 	int individual_coffset = 0;
+	int no_cspad = 0;
 	int error_maps = 1;
 	double max_peak_dist = 4.0;
 
@@ -2724,22 +2855,24 @@ int main(int argc, char *argv[])
 	const struct option longopts[] = {
 
         /* Options with long and short versions */
-        {"help",                   0, NULL,               'h'},
-        {"version",                0, NULL,               10 },
-        {"input",                  1, NULL,               'i'},
-        {"output",                 1, NULL,               'o'},
-        {"geometry",               1, NULL,               'g'},
-        {"quadrants",              1, NULL,               'q'},
-        {"connected",              1, NULL,               'c'},
-        {"min-num-peaks-per-pixel",1, NULL,               'x'},
-        {"min-num-peaks-per-panel",1, NULL,               'p'},
-        {"most-few-clen",          0, NULL,               'l'},
-        {"max-peak-dist",          1, NULL,               'm'},
-        {"individual-dist-offset", 0, NULL,               's'},
+        {"help",                     0, NULL,               'h'},
+        {"version",                  0, NULL,               10 },
+        {"input",                    1, NULL,               'i'},
+        {"output",                   1, NULL,               'o'},
+        {"geometry",                 1, NULL,               'g'},
+        {"quadrants",                1, NULL,               'q'},
+        {"connected",                1, NULL,               'c'},
+        {"min-num-peaks-per-pixel",  1, NULL,               'x'},
+        {"min-num-peaks-per-panel",  1, NULL,               'p'},
+        {"most-few-clen",            0, NULL,               'l'},
+        {"max-peak-dist",            1, NULL,               'm'},
+        {"individual-dist-offset",   0, NULL,               's'},
 
         /* Long-only options with no arguments */
-        {"no-stretch",             0, &nostretch,       1},
-	{"no-error-maps",          0, &error_maps,      0},
+        {"no-stretch",               0, &nostretch,                1},
+        {"no-error-maps",            0, &error_maps,               0},
+        {"enforce-cspad-layout",     0, &enforce_cspad_layout,     1},
+        {"no-cspad",                 0, &no_cspad,                 1},
 
 	{0, 0, NULL, 0}
 	};
@@ -2862,7 +2995,8 @@ int main(int argc, char *argv[])
 	ret_val = optimize_geometry(infile, outfile, geometry_filename, det,
 	                        quadrants, connected, min_num_peaks_per_pixel,
 	                        min_num_peaks_per_panel, only_best_distance,
-	                        nostretch, individual_coffset, error_maps,
+				nostretch, individual_coffset, error_maps,
+				enforce_cspad_layout, no_cspad,
 	                        max_peak_dist, command_line);
 
 	return ret_val;

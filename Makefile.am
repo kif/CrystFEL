@@ -11,7 +11,8 @@ noinst_PROGRAMS = tests/list_check tests/integration_check \
                   tests/pr_p_gradient_check tests/symmetry_check \
                   tests/centering_check tests/transformation_check \
                   tests/cell_check tests/ring_check \
-                  tests/prof2d_check tests/ambi_check
+                  tests/prof2d_check tests/ambi_check \
+		  tests/prediction_gradient_check
 
 MERGE_CHECKS = tests/first_merge_check tests/second_merge_check \
                tests/third_merge_check tests/fourth_merge_check
@@ -24,7 +25,8 @@ PARTIAL_CHECKS = tests/partialator_merge_check_1 \
 TESTS = tests/list_check $(MERGE_CHECKS) $(PARTIAL_CHECKS) \
         tests/integration_check \
         tests/symmetry_check tests/centering_check tests/transformation_check \
-        tests/cell_check tests/ring_check tests/prof2d_check tests/ambi_check
+        tests/cell_check tests/ring_check tests/prof2d_check tests/ambi_check \
+        tests/prediction_gradient_check
 
 EXTRA_DIST += $(MERGE_CHECKS) $(PARTIAL_CHECKS)
 EXTRA_DIST += relnotes-0.6.0
@@ -71,7 +73,8 @@ src_process_hkl_SOURCES = src/process_hkl.c
 
 src_list_events_SOURCES = src/list_events.c
 
-src_indexamajig_SOURCES = src/indexamajig.c src/im-sandbox.c src/process_image.c
+src_indexamajig_SOURCES = src/indexamajig.c src/im-sandbox.c \
+                          src/process_image.c src/predict-refine.c
 
 if BUILD_HDFSEE
 src_hdfsee_SOURCES = src/hdfsee.c src/dw-hdfsee.c src/hdfsee-render.c
@@ -121,6 +124,8 @@ tests_ambi_check_SOURCES = tests/ambi_check.c
 tests_pr_p_gradient_check_SOURCES = tests/pr_p_gradient_check.c \
                                   src/post-refinement.c
 
+tests_prediction_gradient_check_SOURCES = tests/prediction_gradient_check.c
+
 tests_centering_check_SOURCES = tests/centering_check.c
 
 tests_transformation_check_SOURCES = tests/transformation_check.c
@@ -136,7 +141,7 @@ EXTRA_DIST += src/dw-hdfsee.h src/hdfsee.h src/render_hkl.h \
               src/cl-utils.h src/hdfsee-render.h src/diffraction.h \
               src/diffraction-gpu.h src/pattern_sim.h src/list_tmp.h \
               src/im-sandbox.h src/process_image.h src/multihistogram.h \
-              src/rejection.h
+              src/rejection.h src/predict-refine.h
 
 crystfeldir = $(datadir)/crystfel
 crystfel_DATA = data/diffraction.cl data/hdfsee.ui
@@ -181,7 +186,9 @@ script_DATA = scripts/alternate-stream scripts/cell-please \
               scripts/clean-stream.py scripts/fg-graph scripts/truncate-stream \
               scripts/gen-sfs-expand scripts/add-beam-params \
               scripts/find-pairs scripts/plot-cc-and-scale.R \
-              scripts/ave-resolution scripts/crystal-frame-number
+              scripts/ave-resolution scripts/crystal-frame-number \
+              scripts/plot-radius-resolution scripts/plot-predict-refine \
+              scripts/detector-shift
 
 EXTRA_DIST += $(script_DATA)
 

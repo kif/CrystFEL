@@ -3,11 +3,11 @@
  *
  * Post refinement
  *
- * Copyright © 2012-2014 Deutsches Elektronen-Synchrotron DESY,
+ * Copyright © 2012-2015 Deutsches Elektronen-Synchrotron DESY,
  *                       a research centre of the Helmholtz Association.
  *
  * Authors:
- *   2010-2014 Thomas White <taw@physics.org>
+ *   2010-2015 Thomas White <taw@physics.org>
  *
  * This file is part of CrystFEL.
  *
@@ -53,7 +53,6 @@
 
 /* Maximum number of iterations of NLSq to do for each image per macrocycle. */
 #define MAX_CYCLES (10)
-
 
 /* Returns dp(gauss)/dr at "r" */
 static double gaussian_fraction_gradient(double r, double R)
@@ -179,27 +178,17 @@ static double volume_fraction(double rlow, double rhigh, double pr,
  * of 'image'. */
 double p_gradient(Crystal *cr, int k, Reflection *refl, PartialityModel pmodel)
 {
-	double azi;
 	double glow, ghigh;
-	double asx, asy, asz;
-	double bsx, bsy, bsz;
-	double csx, csy, csz;
-	double xl, yl, zl;
-	double ds;
-	signed int hs, ks, ls;
 	double rlow, rhigh, p;
-	double philow, phihigh, phi;
-	double khigh, klow;
-	double tl, cet, cez;
 	struct image *image = crystal_get_image(cr);
 	double R = crystal_get_profile_radius(cr);
-	double D, psph;
 
 	get_partial(refl, &rlow, &rhigh, &p);
 
-	if ( k == REF_R ) {
+	if ( k == GPARAM_R ) {
 
 		double Rglow, Rghigh;
+		double D, psph;
 
 		D = rlow - rhigh;
 		psph = volume_fraction(rlow, rhigh, R, pmodel);
@@ -215,78 +204,21 @@ double p_gradient(Crystal *cr, int k, Reflection *refl, PartialityModel pmodel)
 	glow = partiality_gradient(rlow, R, pmodel, rlow, rhigh);
 	ghigh = partiality_gradient(rhigh, R, pmodel, rlow, rhigh);
 
-	get_symmetric_indices(refl, &hs, &ks, &ls);
-	ds = 2.0 * resolution(crystal_get_cell(cr), hs, ks, ls);
+	if ( k == GPARAM_DIV ) {
 
-	cell_get_reciprocal(crystal_get_cell(cr), &asx, &asy, &asz,
-	                                          &bsx, &bsy, &bsz,
-	                                          &csx, &csy, &csz);
-	xl = hs*asx + ks*bsx + ls*csx;
-	yl = hs*asy + ks*bsy + ls*csy;
-	zl = hs*asz + ks*bsz + ls*csz;
+		double D, psph, ds;
+		signed int hs, ks, ls;
 
-	/* "low" gives the largest Ewald sphere (wavelength short => k large)
-	 * "high" gives the smallest Ewald sphere (wavelength long => k small)
-	 */
-	klow = 1.0/(image->lambda - image->lambda*image->bw/2.0);
-	khigh = 1.0/(image->lambda + image->lambda*image->bw/2.0);
-
-	tl = sqrt(xl*xl + yl*yl);
-
-	cet = -sin(image->div/2.0) * klow;
-	cez = -cos(image->div/2.0) * klow;
-	philow = angle_between_2d(tl-cet, zl-cez, 0.0, 1.0);
-
-	cet = -sin(image->div/2.0) * khigh;
-	cez = -cos(image->div/2.0) * khigh;
-	phihigh = angle_between_2d(tl-cet, zl-cez, 0.0, 1.0);
-
-	/* Approximation: philow and phihigh are very similar */
-	phi = (philow + phihigh) / 2.0;
-
-	azi = atan2(yl, xl);
-
-	/* For many gradients, just multiply the above number by the gradient
-	 * of excitation error wrt whatever. */
-	switch ( k ) {
-
-		/* Cell parameters and orientation */
-		case REF_ASX :
-		return - hs * sin(phi) * cos(azi) * (glow-ghigh);
-
-		case REF_BSX :
-		return - ks * sin(phi) * cos(azi) * (glow-ghigh);
-
-		case REF_CSX :
-		return - ls * sin(phi) * cos(azi) * (glow-ghigh);
-
-		case REF_ASY :
-		return - hs * sin(phi) * sin(azi) * (glow-ghigh);
-
-		case REF_BSY :
-		return - ks * sin(phi) * sin(azi) * (glow-ghigh);
-
-		case REF_CSY :
-		return - ls * sin(phi) * sin(azi) * (glow-ghigh);
-
-		case REF_ASZ :
-		return - hs * cos(phi) * (glow-ghigh);
-
-		case REF_BSZ :
-		return - ks * cos(phi) * (glow-ghigh);
-
-		case REF_CSZ :
-		return - ls * cos(phi) * (glow-ghigh);
-
-		case REF_DIV :
 		D = rlow - rhigh;
 		psph = volume_fraction(rlow, rhigh, R, pmodel);
+		get_symmetric_indices(refl, &hs, &ks, &ls);
+		ds = 2.0 * resolution(crystal_get_cell(cr), hs, ks, ls);
+
 		return (ds/2.0)*(glow+ghigh) - 4.0*R*psph*ds/(3.0*D*D);
 
 	}
 
-	ERROR("No gradient defined for parameter %i\n", k);
-	abort();
+	return r_gradient(crystal_get_cell(cr), k, refl, image) * (glow-ghigh);
 }
 
 
@@ -302,15 +234,15 @@ static void apply_cell_shift(UnitCell *cell, int k, double shift)
 
 	switch ( k )
 	{
-		case REF_ASX :  asx += shift;  break;
-		case REF_ASY :  asy += shift;  break;
-		case REF_ASZ :  asz += shift;  break;
-		case REF_BSX :  bsx += shift;  break;
-		case REF_BSY :  bsy += shift;  break;
-		case REF_BSZ :  bsz += shift;  break;
-		case REF_CSX :  csx += shift;  break;
-		case REF_CSY :  csy += shift;  break;
-		case REF_CSZ :  csz += shift;  break;
+		case GPARAM_ASX :  asx += shift;  break;
+		case GPARAM_ASY :  asy += shift;  break;
+		case GPARAM_ASZ :  asz += shift;  break;
+		case GPARAM_BSX :  bsx += shift;  break;
+		case GPARAM_BSY :  bsy += shift;  break;
+		case GPARAM_BSZ :  bsz += shift;  break;
+		case GPARAM_CSX :  csx += shift;  break;
+		case GPARAM_CSY :  csy += shift;  break;
+		case GPARAM_CSZ :  csz += shift;  break;
 	}
 
 	cell_set_reciprocal(cell, asx, asy, asz,
@@ -327,7 +259,7 @@ static void apply_shift(Crystal *cr, int k, double shift)
 
 	switch ( k ) {
 
-		case REF_DIV :
+		case GPARAM_DIV :
 		if ( isnan(shift) ) {
 			ERROR("NaN divergence shift\n");
 		} else {
@@ -336,21 +268,21 @@ static void apply_shift(Crystal *cr, int k, double shift)
 		}
 		break;
 
-		case REF_R :
+		case GPARAM_R :
 		t = crystal_get_profile_radius(cr);
 		t += shift;
 		crystal_set_profile_radius(cr, t);
 		break;
 
-		case REF_ASX :
-		case REF_ASY :
-		case REF_ASZ :
-		case REF_BSX :
-		case REF_BSY :
-		case REF_BSZ :
-		case REF_CSX :
-		case REF_CSY :
-		case REF_CSZ :
+		case GPARAM_ASX :
+		case GPARAM_ASY :
+		case GPARAM_ASZ :
+		case GPARAM_BSX :
+		case GPARAM_BSY :
+		case GPARAM_BSZ :
+		case GPARAM_CSX :
+		case GPARAM_CSY :
+		case GPARAM_CSZ :
 		apply_cell_shift(crystal_get_cell(cr), k, shift);
 		break;
 
@@ -376,13 +308,31 @@ static double pr_iterate(Crystal *cr, const RefList *full,
 	double max_shift;
 	int nref = 0;
 	const int verbose = 0;
+	int num_params = 0;
+	enum gparam rv[32];
 
 	*n_filtered = 0;
 
+	/* If partiality model is anything other than "unity", refine all the
+	 * geometrical parameters */
+	if ( pmodel != PMODEL_UNITY ) {
+		rv[num_params++] = GPARAM_ASX;
+		rv[num_params++] = GPARAM_ASY;
+		rv[num_params++] = GPARAM_ASZ;
+		rv[num_params++] = GPARAM_BSX;
+		rv[num_params++] = GPARAM_BSY;
+		rv[num_params++] = GPARAM_BSZ;
+		rv[num_params++] = GPARAM_CSX;
+		rv[num_params++] = GPARAM_CSY;
+		rv[num_params++] = GPARAM_CSZ;
+	}
+
+	STATUS("Refining %i parameters.\n", num_params);
+
 	reflections = crystal_get_reflections(cr);
 
-	M = gsl_matrix_calloc(NUM_PARAMS, NUM_PARAMS);
-	v = gsl_vector_calloc(NUM_PARAMS);
+	M = gsl_matrix_calloc(num_params, num_params);
+	v = gsl_vector_calloc(num_params);
 
 	/* Construct the equations, one per reflection in this image */
 	for ( refl = first_refl(reflections, &iter);
@@ -396,7 +346,7 @@ static double pr_iterate(Crystal *cr, const RefList *full,
 		int k;
 		double p, l;
 		Reflection *match;
-		double gradients[NUM_PARAMS];
+		double gradients[num_params];
 
 		/* Find the full version */
 		get_indices(refl, &ha, &ka, &la);
@@ -420,16 +370,16 @@ static double pr_iterate(Crystal *cr, const RefList *full,
 		w = pow(w, -1.0);
 
 		/* Calculate all gradients for this reflection */
-		for ( k=0; k<NUM_PARAMS; k++ ) {
-			gradients[k] = p_gradient(cr, k, refl, pmodel) * l;
+		for ( k=0; k<num_params; k++ ) {
+			gradients[k] = p_gradient(cr, rv[k], refl, pmodel) * l;
 		}
 
-		for ( k=0; k<NUM_PARAMS; k++ ) {
+		for ( k=0; k<num_params; k++ ) {
 
 			int g;
 			double v_c, v_curr;
 
-			for ( g=0; g<NUM_PARAMS; g++ ) {
+			for ( g=0; g<num_params; g++ ) {
 
 				double M_c, M_curr;
 
@@ -471,9 +421,9 @@ static double pr_iterate(Crystal *cr, const RefList *full,
 	shifts = solve_svd(v, M, n_filtered, verbose);
 	if ( shifts != NULL ) {
 
-		for ( param=0; param<NUM_PARAMS; param++ ) {
+		for ( param=0; param<num_params; param++ ) {
 			double shift = gsl_vector_get(shifts, param);
-			apply_shift(cr, param, shift);
+			apply_shift(cr, rv[param], shift);
 			//STATUS("Shift %i: %e\n", param, shift);
 			if ( fabs(shift) > max_shift ) max_shift = fabs(shift);
 		}
@@ -535,59 +485,11 @@ static double guide_dev(Crystal *cr, const RefList *full)
 }
 
 
-struct param_backup
-{
-	UnitCell *cell;
-	double profile_radius;
-	double div;
-};
-
-
-static struct param_backup backup_crystal(Crystal *cr)
-{
-	struct param_backup b;
-	struct image *image = crystal_get_image(cr);
-
-	b.cell = cell_new_from_cell(crystal_get_cell(cr));
-	b.profile_radius = crystal_get_profile_radius(cr);
-	b.div = image->div;
-
-	return b;
-}
-
-
-static void revert_crystal(Crystal *cr, struct param_backup b)
-{
-	double asx, asy, asz;
-	double bsx, bsy, bsz;
-	double csx, csy, csz;
-	struct image *image = crystal_get_image(cr);
-
-	cell_get_reciprocal(b.cell, &asx, &asy, &asz,
-	                            &bsx, &bsy, &bsz,
-	                            &csx, &csy, &csz);
-
-	cell_set_reciprocal(crystal_get_cell(cr), asx, asy, asz,
-	                                          bsx, bsy, bsz,
-	                                          csx, csy, csz);
-
-	crystal_set_profile_radius(cr, b.profile_radius);
-	image->div = b.div;
-}
-
-
-static void free_backup_crystal(struct param_backup b)
-{
-	cell_free(b.cell);
-}
-
-
 struct prdata pr_refine(Crystal *cr, const RefList *full,
                         PartialityModel pmodel)
 {
 	double dev;
 	int i;
-	struct param_backup backup;
 	const int verbose = 0;
 	struct prdata prdata;
 	double mean_p_change = 0.0;
@@ -605,8 +507,6 @@ struct prdata pr_refine(Crystal *cr, const RefList *full,
 		       dev);
 	}
 
-	backup = backup_crystal(cr);
-
 	i = 0;
 	do {
 
@@ -614,40 +514,22 @@ struct prdata pr_refine(Crystal *cr, const RefList *full,
 		double bsx, bsy, bsz;
 		double csx, csy, csz;
 		double dev;
-		int n_total;
-		int n_gained = 0;
-		int n_lost = 0;
 
-		n_total = num_reflections(crystal_get_reflections(cr));
 		cell_get_reciprocal(crystal_get_cell(cr), &asx, &asy, &asz,
 			               &bsx, &bsy, &bsz, &csx, &csy, &csz);
 
 		pr_iterate(cr, full, pmodel, &prdata.n_filtered);
 
-		update_partialities_2(cr, pmodel, &n_gained, &n_lost,
-		                      &mean_p_change);
+		update_partialities(cr, pmodel);
 
 		if ( verbose ) {
 			dev = guide_dev(cr, full);
-			STATUS("PR Iteration %2i: mean p change = %10.2f"
-			       " dev = %10.5e, %i gained, %i lost, %i total\n",
-			       i+1, mean_p_change, dev,
-			       n_gained, n_lost, n_total);
-		}
-
-		if ( 3*n_lost > n_total ) {
-			revert_crystal(cr, backup);
-			update_partialities_2(cr, pmodel, &n_gained, &n_lost,
-			                      &mean_p_change);
-			crystal_set_user_flag(cr, 4);
-			break;
+			STATUS("PR Iteration %2i: dev = %10.5e\n", i+1, dev);
 		}
 
 		i++;
 
 	} while ( (mean_p_change > 0.01) && (i < MAX_CYCLES) );
-
-	free_backup_crystal(backup);
 
 	if ( crystal_get_user_flag(cr) == 0 ) {
 		prdata.refined = 1;

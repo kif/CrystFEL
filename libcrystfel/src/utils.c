@@ -164,7 +164,7 @@ static int check_eigen(gsl_vector *e_val, int verbose)
  * Solves the matrix equation M.x = v, returning x.
  * Performs rescaling and eigenvalue filtering.
  **/
-gsl_vector *solve_svd(gsl_vector *v, gsl_matrix *M, int *n_filt, int verbose)
+gsl_vector *solve_svd(gsl_vector *v, gsl_matrix *M, int *pn_filt, int verbose)
 {
 	gsl_matrix *s_vec;
 	gsl_vector *s_val;
@@ -176,6 +176,7 @@ gsl_vector *solve_svd(gsl_vector *v, gsl_matrix *M, int *n_filt, int verbose)
 	gsl_matrix *AS;
 	gsl_matrix *SAS;
 	int i;
+	int n_filt;
 	gsl_matrix *SAS_copy;
 
 	n = v->size;
@@ -208,6 +209,16 @@ gsl_vector *solve_svd(gsl_vector *v, gsl_matrix *M, int *n_filt, int verbose)
 	SAS_copy = gsl_matrix_alloc(SAS->size1, SAS->size2);
 	gsl_matrix_memcpy(SAS_copy, SAS);
 
+	for ( i=0; i<n; i++ ) {
+		int j;
+		if ( isnan(gsl_vector_get(SB, i)) ) gsl_vector_set(SB, i, 0.0);
+		for ( j=0; j<n; j++ ) {
+			if ( isnan(gsl_matrix_get(SAS, i, j)) ) {
+					gsl_matrix_set(SAS, i, j, 0.0);
+			}
+		}
+	}
+
 	/* Do the SVD */
 	s_val = gsl_vector_calloc(n);
 	s_vec = gsl_matrix_calloc(n, n);
@@ -223,7 +234,8 @@ gsl_vector *solve_svd(gsl_vector *v, gsl_matrix *M, int *n_filt, int verbose)
 	/* "SAS" is now "U" */
 
 	/* Filter the eigenvalues */
-	if ( n_filt != NULL ) *n_filt = check_eigen(s_val, verbose);
+	n_filt = check_eigen(s_val, verbose);
+	if ( pn_filt != NULL ) *pn_filt = n_filt;
 
 	gsl_matrix_free(SAS_copy);
 

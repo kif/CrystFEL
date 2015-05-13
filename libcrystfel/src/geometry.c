@@ -47,58 +47,65 @@
 #include "geometry.h"
 
 
+static int locate_peak_on_panel(double x, double y, double z, double k,
+                                struct panel *p,
+                                double *pfs, double *pss)
+{
+	const double den = k + z;
+	double fs, ss, plx, ply, xd, yd;
+
+	/* Coordinates of peak relative to central beam, in m */
+	xd = p->clen * x / den;
+	yd = p->clen * y / den;
+
+	/* Convert to pixels */
+	xd *= p->res;
+	yd *= p->res;
+
+	/* Convert to relative to the panel corner */
+	plx = xd - p->cnx;
+	ply = yd - p->cny;
+
+	fs = p->xfs*plx + p->yfs*ply;
+	ss = p->xss*plx + p->yss*ply;
+
+	fs += p->min_fs;
+	ss += p->min_ss;
+
+	*pfs = fs;  *pss = ss;
+
+	/* Now, is this on this panel? */
+	if ( fs < p->min_fs ) return 0;
+	if ( fs > p->max_fs ) return 0;
+	if ( ss < p->min_ss ) return 0;
+	if ( ss > p->max_ss ) return 0;
+
+	return 1;
+}
+
 static signed int locate_peak(double x, double y, double z, double k,
-                              struct detector *det, double *xdap, double *ydap)
+                              struct detector *det, double *pfs, double *pss)
 {
 	int i;
-	signed int found = -1;
-	const double den = k + z;
 
-	*xdap = -1;  *ydap = -1;
+	*pfs = -1;  *pss = -1;
 
 	for ( i=0; i<det->n_panels; i++ ) {
 
-		double xd, yd;
-		double fs, ss, plx, ply;
 		struct panel *p;
 
 		p = &det->panels[i];
 
-		/* Coordinates of peak relative to central beam, in m */
-		xd = p->clen * x / den;
-		yd = p->clen * y / den;
+		if ( locate_peak_on_panel(x, y, z, k, p, pfs, pss) ) {
 
-		/* Convert to pixels */
-		xd *= p->res;
-		yd *= p->res;
+			/* Woohoo! */
+			return i;
 
-		/* Convert to relative to the panel corner */
-		plx = xd - p->cnx;
-		ply = yd - p->cny;
-
-		fs = p->xfs*plx + p->yfs*ply;
-		ss = p->xss*plx + p->yss*ply;
-
-		fs += p->min_fs;
-		ss += p->min_ss;
-
-		/* Now, is this on this panel? */
-		if ( fs < p->min_fs ) continue;
-		if ( fs > p->max_fs ) continue;
-		if ( ss < p->min_ss ) continue;
-		if ( ss > p->max_ss ) continue;
-
-		/* If peak appears on multiple panels, reject it */
-		if ( found != -1 ) return -1;
-
-		/* Woohoo! */
-		found = i;
-		*xdap = fs;
-		*ydap = ss;
+		}
 
 	}
 
-	return found;
+	return -1;
 }
 
 
@@ -182,7 +189,8 @@ static double partiality(PartialityModel pmodel,
 static Reflection *check_reflection(struct image *image, Crystal *cryst,
                                     PartialityModel pmodel,
                                     signed int h, signed int k, signed int l,
-                                    double xl, double yl, double zl)
+                                    double xl, double yl, double zl,
+                                    Reflection *updateme)
 {
 	const int output = 0;
 	double tl;
@@ -195,7 +203,7 @@ static Reflection *check_reflection(struct image *image, Crystal *cryst,
 	double del;
 
 	/* Don't predict 000 */
-	if ( abs(h)+abs(k)+abs(l) == 0 ) return NULL;
+	if ( (updateme == NULL) && (abs(h)+abs(k)+abs(l) == 0) ) return NULL;
 
 	pr = crystal_get_profile_radius(cryst);
 	del = image->div + crystal_get_mosaicity(cryst);
@@ -207,7 +215,7 @@ static Reflection *check_reflection(struct image *image, Crystal *cryst,
 	khigh = 1.0/(image->lambda + image->lambda*image->bw/2.0);
 
 	/* If the point is looking "backscattery", reject it straight away */
-	if ( zl < -khigh/2.0 ) return NULL;
+	if ( (updateme == NULL) && (zl < -khigh/2.0) ) return NULL;
 
 	tl = sqrt(xl*xl + yl*yl);
 
@@ -220,28 +228,47 @@ static Reflection *check_reflection(struct image *image, Crystal *cryst,
 	rlow = klow - distance(cet, cez, tl, zl);  /* Loss of precision */
 
 	/* Condition for reflection to be excited at all */
-	if ( (signbit(rlow) == signbit(rhigh))
+	if ( (updateme == NULL)
+	     && (signbit(rlow) == signbit(rhigh))
 	     && (fabs(rlow) > pr)
 	     && (fabs(rhigh) > pr) ) return NULL;
 
 	/* Calculate partiality */
 	part = partiality(pmodel, rlow, rhigh, pr);
 
-	/* Add peak to list */
-	refl = reflection_new(h, k, l);
+	if ( updateme == NULL ) {
+		refl = reflection_new(h, k, l);
+	} else {
+		refl = updateme;
+	}
 
-	/* If we have detector information, check the spot is measured.
-	 * Otherwise, we make do with calculating the partialiaty etc. */
-	if ( image->det != NULL ) {
-		double xda, yda;        /* Position on detector */
-		signed int p;           /* Panel number */
-		p = locate_peak(xl, yl, zl, 1.0/image->lambda, image->det,
-		                &xda, &yda);
+	/* If we are updating a previous reflection, assume it stays
+	 * on the same panel and calculate the new position even if it's
+	 * fallen off the edge of the panel. */
+	if ( updateme != NULL ) {
+
+		double fs, ss;
+		locate_peak_on_panel(xl, yl, zl, 1.0/image->lambda,
+		                     get_panel(updateme), &fs, &ss);
+		set_detector_pos(refl, fs, ss);
+
+	}
+
+	/* Otherwise, calculate position if we have a detector structure, and
+	 * if we don't then just make do with partiality calculation */
+	if ( (image->det != NULL) && (updateme == NULL) ) {
+
+		double fs, ss;        /* Position on detector */
+		signed int p;         /* Panel number */
+		p = locate_peak(xl, yl, zl, 1.0/image->lambda,
+		                image->det, &fs, &ss);
 		if ( p == -1 ) {
 			reflection_free(refl);
 			return NULL;
 		}
-		set_detector_pos(refl, 0.0, xda, yda);
+		set_detector_pos(refl, fs, ss);
+		set_panel(refl, &image->det->panels[p]);
+
 	}
 
 	if ( unlikely(rlow < rhigh) ) {
@@ -249,8 +276,11 @@ static Reflection *check_reflection(struct image *image, Crystal *cryst,
 		ERROR("%3i %3i %3i  rlow = %e, rhigh = %e\n",
 		      h, k, l, rlow, rhigh);
 		ERROR("div + m = %e, R = %e, bw = %e\n", del, pr, image->bw);
-		reflection_free(refl);
-		return NULL;
+		/* If we are updating, this is (kind of) OK */
+		if ( updateme == NULL ) {
+			reflection_free(refl);
+			return NULL;
+		}
 	}
 
 	set_partial(refl, rlow, rhigh, part);
@@ -263,6 +293,92 @@ static Reflection *check_reflection(struct image *image, Crystal *cryst,
 	}
 
 	return refl;
+}
+
+
+double r_gradient(UnitCell *cell, int k, Reflection *refl, struct image *image)
+{
+	double azi;
+	double asx, asy, asz;
+	double bsx, bsy, bsz;
+	double csx, csy, csz;
+	double xl, yl, zl;
+	signed int hs, ks, ls;
+	double rlow, rhigh, p;
+	double philow, phihigh, phi;
+	double khigh, klow;
+	double tl, cet, cez;
+
+	get_partial(refl, &rlow, &rhigh, &p);
+
+	get_symmetric_indices(refl, &hs, &ks, &ls);
+
+	cell_get_reciprocal(cell, &asx, &asy, &asz,
+	                          &bsx, &bsy, &bsz,
+	                          &csx, &csy, &csz);
+	xl = hs*asx + ks*bsx + ls*csx;
+	yl = hs*asy + ks*bsy + ls*csy;
+	zl = hs*asz + ks*bsz + ls*csz;
+
+	/* "low" gives the largest Ewald sphere (wavelength short => k large)
+	 * "high" gives the smallest Ewald sphere (wavelength long => k small)
+	 */
+	klow = 1.0/(image->lambda - image->lambda*image->bw/2.0);
+	khigh = 1.0/(image->lambda + image->lambda*image->bw/2.0);
+
+	tl = sqrt(xl*xl + yl*yl);
+
+	cet = -sin(image->div/2.0) * klow;
+	cez = -cos(image->div/2.0) * klow;
+	philow = angle_between_2d(tl-cet, zl-cez, 0.0, 1.0);
+
+	cet = -sin(image->div/2.0) * khigh;
+	cez = -cos(image->div/2.0) * khigh;
+	phihigh = angle_between_2d(tl-cet, zl-cez, 0.0, 1.0);
+
+	/* Approximation: philow and phihigh are very similar */
+	phi = (philow + phihigh) / 2.0;
+
+	azi = atan2(yl, xl);
+
+	switch ( k ) {
+
+		case GPARAM_ASX :
+		return - hs * sin(phi) * cos(azi);
+
+		case GPARAM_BSX :
+		return - ks * sin(phi) * cos(azi);
+
+		case GPARAM_CSX :
+		return - ls * sin(phi) * cos(azi);
+
+		case GPARAM_ASY :
+		return - hs * sin(phi) * sin(azi);
+
+		case GPARAM_BSY :
+		return - ks * sin(phi) * sin(azi);
+
+		case GPARAM_CSY :
+		return - ls * sin(phi) * sin(azi);
+
+		case GPARAM_ASZ :
+		return - hs * cos(phi);
+
+		case GPARAM_BSZ :
+		return - ks * cos(phi);
+
+		case GPARAM_CSZ :
+		return - ls * cos(phi);
+
+		case GPARAM_DETX :
+		case GPARAM_DETY :
+		case GPARAM_CLEN :
+		return 0.0;
+
+	}
+
+	ERROR("No r gradient defined for parameter %i\n", k);
+	abort();
 }
 
 
@@ -339,7 +455,7 @@ RefList *find_intersections_to_res(struct image *image, Crystal *cryst,
 		zl = h*asz + k*bsz + l*csz;
 
 		refl = check_reflection(image, cryst, pmodel,
-		                        h, k, l, xl, yl, zl);
+		                        h, k, l, xl, yl, zl, NULL);
 
 		if ( refl != NULL ) {
 			add_refl_to_list(refl, reflections);
@@ -350,67 +466,6 @@ RefList *find_intersections_to_res(struct image *image, Crystal *cryst,
 	}
 
 	return reflections;
-}
-
-
-/* Deprecated: select reflections using Kirian-style pixel proximity */
-RefList *select_intersections(struct image *image, Crystal *cryst)
-{
-	double ax, ay, az;
-	double bx, by, bz;
-	double cx, cy, cz;
-	const double min_dist = 0.25;
-	RefList *list;
-	int i;
-
-	/* Round towards nearest */
-	fesetround(1);
-
-	/* Cell basis vectors for this image */
-	cell_get_cartesian(crystal_get_cell(cryst), &ax, &ay, &az,
-	                   &bx, &by, &bz, &cx, &cy, &cz);
-
-	list = reflist_new();
-	if ( list == NULL ) return NULL;
-
-	/* Loop over peaks, checking proximity to nearest reflection */
-	for ( i=0; i<image_feature_count(image->features); i++ ) {
-
-		struct imagefeature *f;
-		struct rvec q;
-		double h, k, l, hd, kd, ld;
-		double dsq;
-
-		f = image_get_feature(image->features, i);
-		if ( f == NULL ) continue;
-
-		/* Reciprocal space position of found peak */
-		q = get_q(image, f->fs, f->ss, NULL, 1.0/image->lambda);
-
-		/* Decimal and fractional Miller indices of nearest
-		 * reciprocal lattice point */
-		hd = q.u * ax + q.v * ay + q.w * az;
-		kd = q.u * bx + q.v * by + q.w * bz;
-		ld = q.u * cx + q.v * cy + q.w * cz;
-		h = lrint(hd);
-		k = lrint(kd);
-		l = lrint(ld);
-
-		/* Check distance */
-		dsq = pow(h-hd, 2.0) + pow(k-kd, 2.0) + pow(l-ld, 2.0);
-
-		if ( sqrt(dsq) < min_dist ) {
-
-			Reflection *refl;
-
-			refl = add_refl(list, h, k, l);
-			set_detector_pos(refl, sqrt(dsq), f->fs, f->ss);
-
-		}
-
-	}
-
-	return list;
 }
 
 
@@ -430,8 +485,7 @@ static void set_unity_partialities(Crystal *cryst)
 
 
 /* Calculate partialities and apply them to the image's reflections */
-void update_partialities_2(Crystal *cryst, PartialityModel pmodel,
-                           int *n_gained, int *n_lost, double *mean_p_change)
+void update_partialities(Crystal *cryst, PartialityModel pmodel)
 {
 	Reflection *refl;
 	RefListIterator *iter;
@@ -439,8 +493,6 @@ void update_partialities_2(Crystal *cryst, PartialityModel pmodel,
 	double bsx, bsy, bsz;
 	double csx, csy, csz;
 	struct image *image = crystal_get_image(cryst);
-	double total_p_change = 0.0;
-	int n = 0;
 
 	if ( pmodel == PMODEL_UNITY ) {
 		set_unity_partialities(cryst);
@@ -454,69 +506,20 @@ void update_partialities_2(Crystal *cryst, PartialityModel pmodel,
 	      refl != NULL;
 	      refl = next_refl(refl, iter) )
 	{
-		Reflection *vals;
-		double r1, r2, L, p, x, y;
 		double xl, yl, zl;
 		signed int h, k, l;
-		double old_p;
 
 		get_symmetric_indices(refl, &h, &k, &l);
-		old_p = get_partiality(refl);
 
 		/* Get the coordinates of the reciprocal lattice point */
 		xl = h*asx + k*bsx + l*csx;
 		yl = h*asy + k*bsy + l*csy;
 		zl = h*asz + k*bsz + l*csz;
 
-		vals = check_reflection(image, cryst, pmodel,
-		                        h, k, l, xl, yl, zl);
-
-		if ( vals == NULL ) {
-
-			if ( get_redundancy(refl) != 0 ) {
-				(*n_lost)++;
-				set_partiality(refl, 0.0);
-				set_redundancy(refl, 0);
-			}
-
-		} else {
-
-			if ( get_redundancy(refl) == 0 ) {
-				(*n_gained)++;
-				set_redundancy(refl, 1);
-			}
-
-			/* Transfer partiality stuff */
-			get_partial(vals, &r1, &r2, &p);
-			set_partial(refl, r1, r2, p);
-			L = get_lorentz(vals);
-			set_lorentz(refl, L);
-
-			/* Transfer detector location */
-			get_detector_pos(vals, &x, &y);
-			set_detector_pos(refl, 0.0, x, y);
-
-			reflection_free(vals);
-
-			total_p_change += fabs(p - old_p);
-			n++;
-
-		}
+		check_reflection(image, cryst, pmodel,
+		                 h, k, l, xl, yl, zl, refl);
 
 	}
-
-	*mean_p_change = total_p_change / n;
-}
-
-
-/* Wrapper to maintain API compatibility */
-void update_partialities(Crystal *cryst, PartialityModel pmodel)
-{
-	int n_gained = 0;
-	int n_lost = 0;
-	double mean_p_change = 0.0;
-	update_partialities_2(cryst, pmodel, &n_gained, &n_lost,
-	                      &mean_p_change);
 }
 
 

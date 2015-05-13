@@ -3,12 +3,12 @@
  *
  * Geometry of diffraction
  *
- * Copyright © 2013-2014 Deutsches Elektronen-Synchrotron DESY,
+ * Copyright © 2013-2015 Deutsches Elektronen-Synchrotron DESY,
  *                       a research centre of the Helmholtz Association.
  * Copyright © 2012 Richard Kirian
  *
  * Authors:
- *   2010-2014 Thomas White <taw@physics.org>
+ *   2010-2015 Thomas White <taw@physics.org>
  *   2012      Richard Kirian
  *
  * This file is part of CrystFEL.
@@ -61,19 +61,35 @@ typedef enum {
 
 } PartialityModel;
 
+
+/* Enumeration of parameters which may want to be refined */
+enum gparam {
+	GPARAM_ASX,
+	GPARAM_ASY,
+	GPARAM_ASZ,
+	GPARAM_BSX,
+	GPARAM_BSY,
+	GPARAM_BSZ,
+	GPARAM_CSX,
+	GPARAM_CSY,
+	GPARAM_CSZ,
+	GPARAM_R,
+	GPARAM_DIV,
+	GPARAM_DETX,
+	GPARAM_DETY,
+	GPARAM_CLEN
+};
+
+
 extern RefList *find_intersections(struct image *image, Crystal *cryst,
                                    PartialityModel pmodel);
 extern RefList *find_intersections_to_res(struct image *image, Crystal *cryst,
                                           PartialityModel pmodel,
 					  double max_res);
 
-/* Deprecated: select reflections using Kirian-style pixel proximity */
-extern RefList *select_intersections(struct image *image, Crystal *cryst);
-
+extern double r_gradient(UnitCell *cell, int k, Reflection *refl,
+                         struct image *image);
 extern void update_partialities(Crystal *cryst, PartialityModel pmodel);
-extern void update_partialities_2(Crystal *cryst, PartialityModel pmodel,
-                                  int *n_gained, int *n_lost,
-                                  double *mean_p_change);
 extern void polarisation_correction(RefList *list, UnitCell *cell,
                                     struct image *image);
 

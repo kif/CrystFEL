@@ -1,13 +1,13 @@
 /*
- * pr_p_gradient_check.c
+ * prediction_gradient_check.c
  *
- * Check partiality gradients for post refinement
+ * Check partiality gradients for prediction refinement
  *
- * Copyright © 2012-2014 Deutsches Elektronen-Synchrotron DESY,
+ * Copyright © 2012-2015 Deutsches Elektronen-Synchrotron DESY,
  *                       a research centre of the Helmholtz Association.
  *
  * Authors:
- *   2012-2014 Thomas White <taw@physics.org>
+ *   2012-2015 Thomas White <taw@physics.org>
  *
  * This file is part of CrystFEL.
  *
@@ -41,12 +41,14 @@
 #include <cell-utils.h>
 #include <geometry.h>
 #include <reflist.h>
-#include "../src/post-refinement.h"
+#include "../src/predict-refine.c"
 
 
-static void scan_partialities(RefList *reflections, RefList *compare,
-                              int *valid, long double *vals[3], int idx,
-                              PartialityModel pmodel)
+int checkrxy;
+
+
+static void scan(RefList *reflections, RefList *compare,
+                 int *valid, long double *vals[3], int idx)
 {
 	int i;
 	Reflection *refl;
@@ -60,6 +62,8 @@ static void scan_partialities(RefList *reflections, RefList *compare,
 		signed int h, k, l;
 		Reflection *refl2;
 		double rlow, rhigh, p;
+		double fs, ss, xh, yh;
+		struct panel *panel;
 
 		get_indices(refl, &h, &k, &l);
 		refl2 = find_refl(compare, h, k, l);
@@ -70,10 +74,23 @@ static void scan_partialities(RefList *reflections, RefList *compare,
 		}
 
 		get_partial(refl2, &rlow, &rhigh, &p);
-		vals[idx][i] = p;
-		if ( unlikely(p < 0.0) ) {
-			ERROR("Negative partiality! %3i %3i %3i  %f\n",
-			      h, k, l, p);
+		get_detector_pos(refl2, &fs, &ss);
+		panel = get_panel(refl2);
+		twod_mapping(fs, ss, &xh, &yh, panel);
+
+		switch ( checkrxy ) {
+
+			case 0 :
+			vals[idx][i] = (rlow + rhigh)/2.0;
+			break;
+
+			case 1 :
+			vals[idx][i] = xh;
+			break;
+
+			case 2 :
+			vals[idx][i] = yh;
+			break;
 		}
 
 		i++;
@@ -109,19 +126,9 @@ static UnitCell *new_shifted_cell(UnitCell *input, int k, double shift)
 }
 
 
-static void shift_parameter(struct image *image, int k, double shift)
-{
-	switch ( k )
-	{
-		case GPARAM_DIV : image->div += shift;  break;
-	}
-}
-
-
 static Crystal *new_shifted_crystal(Crystal *cr, int refine, double incr_val)
 {
 	Crystal *cr_new;
-	double r;
 	UnitCell *cell;
 
 	cr_new = crystal_copy(cr);
@@ -131,7 +138,6 @@ static Crystal *new_shifted_crystal(Crystal *cr, int refine, double incr_val)
 	}
 
 	crystal_set_image(cr_new, crystal_get_image(cr));
-	r = crystal_get_profile_radius(cr_new);
 
 	switch ( refine ) {
 
@@ -149,13 +155,7 @@ static Crystal *new_shifted_crystal(Crystal *cr, int refine, double incr_val)
 		crystal_set_cell(cr_new, cell);
 		break;
 
-		case GPARAM_R :
-		cell = cell_new_from_cell(crystal_get_cell(cr));
-		crystal_set_cell(cr_new, cell);
-		crystal_set_profile_radius(cr_new, r + incr_val);
-		break;
-
-		default :
+		default:
 		ERROR("Can't shift %i\n", refine);
 		break;
 
@@ -166,59 +166,31 @@ static Crystal *new_shifted_crystal(Crystal *cr, int refine, double incr_val)
 
 
 static void calc_either_side(Crystal *cr, double incr_val,
-                             int *valid, long double *vals[3], int refine,
-                             PartialityModel pmodel)
+                             int *valid, long double *vals[3], int refine)
 {
 	RefList *compare;
 	struct image *image = crystal_get_image(cr);
+	Crystal *cr_new;
 
-	if ( (refine != GPARAM_DIV) ) {
+	cr_new = new_shifted_crystal(cr, refine, -incr_val);
+	compare = find_intersections(image, cr_new, PMODEL_SCSPHERE);
+	scan(crystal_get_reflections(cr), compare, valid, vals, 0);
+	cell_free(crystal_get_cell(cr_new));
+	crystal_free(cr_new);
+	reflist_free(compare);
 
-		Crystal *cr_new;
-
-		/* Crystal properties */
-		cr_new = new_shifted_crystal(cr, refine, -incr_val);
-		compare = find_intersections(image, cr_new, pmodel);
-		scan_partialities(crystal_get_reflections(cr), compare, valid,
-		                  vals, 0, pmodel);
-		cell_free(crystal_get_cell(cr_new));
-		crystal_free(cr_new);
-		reflist_free(compare);
-
-		cr_new = new_shifted_crystal(cr, refine, +incr_val);
-		compare = find_intersections(image, cr_new, pmodel);
-		scan_partialities(crystal_get_reflections(cr), compare, valid,
-		                  vals, 2, pmodel);
-		cell_free(crystal_get_cell(cr_new));
-		crystal_free(cr_new);
-		reflist_free(compare);
-
-	} else {
-
-		struct image im_moved;
-
-		/* "Image" properties */
-		im_moved = *image;
-		shift_parameter(&im_moved, refine, -incr_val);
-		compare = find_intersections(&im_moved, cr, pmodel);
-		scan_partialities(crystal_get_reflections(cr), compare,
-		                  valid, vals, 0, pmodel);
-		reflist_free(compare);
-
-		im_moved = *image;
-		shift_parameter(&im_moved, refine, +incr_val);
-		compare = find_intersections(&im_moved, cr, pmodel);
-		scan_partialities(crystal_get_reflections(cr), compare,
-		                  valid, vals, 2, pmodel);
-		reflist_free(compare);
-
-	}
+	cr_new = new_shifted_crystal(cr, refine, +incr_val);
+	compare = find_intersections(image, cr_new, PMODEL_SCSPHERE);
+	scan(crystal_get_reflections(cr), compare, valid, vals, 2);
+	cell_free(crystal_get_cell(cr_new));
+	crystal_free(cr_new);
+	reflist_free(compare);
 }
 
 
 static double test_gradients(Crystal *cr, double incr_val, int refine,
                              const char *str, const char *file,
-                             PartialityModel pmodel, int quiet, int plot)
+                             int quiet, int plot)
 {
 	Reflection *refl;
 	RefListIterator *iter;
@@ -237,7 +209,8 @@ static double test_gradients(Crystal *cr, double incr_val, int refine,
 	int n_line;
 	double cc;
 
-	reflections = find_intersections(crystal_get_image(cr), cr, pmodel);
+	reflections = find_intersections(crystal_get_image(cr), cr,
+	                                 PMODEL_SCSPHERE);
 	crystal_set_reflections(cr, reflections);
 
 	nref = num_reflections(reflections);
@@ -261,9 +234,9 @@ static double test_gradients(Crystal *cr, double incr_val, int refine,
 	}
 	for ( i=0; i<nref; i++ ) valid[i] = 1;
 
-	scan_partialities(reflections, reflections, valid, vals, 1, pmodel);
+	scan(reflections, reflections, valid, vals, 1);
 
-	calc_either_side(cr, incr_val, valid, vals, refine, pmodel);
+	calc_either_side(cr, incr_val, valid, vals, refine);
 
 	if ( plot ) {
 		snprintf(tmp, 32, "gradient-test-%s.dat", file);
@@ -284,10 +257,10 @@ static double test_gradients(Crystal *cr, double incr_val, int refine,
 	      refl != NULL;
 	      refl = next_refl(refl, iter) )
 	{
-
 		long double grad1, grad2, grad;
 		double cgrad;
 		signed int h, k, l;
+		struct reflpeak rp;
 
 		get_indices(refl, &h, &k, &l);
 
@@ -303,7 +276,36 @@ static double test_gradients(Crystal *cr, double incr_val, int refine,
 			grad = (grad1 + grad2) / 2.0;
 			i++;
 
-			cgrad = p_gradient(cr, refine, refl, pmodel);
+			if ( checkrxy == 0 ) {
+
+				cgrad = r_gradient(crystal_get_cell(cr), refine,
+				                   refl, crystal_get_image(cr));
+
+			} else {
+
+				struct imagefeature pk;
+				struct image *image;
+
+				pk.fs = 0.0;
+				pk.ss = 0.0;
+
+				image = crystal_get_image(cr);
+				rp.refl = refl;
+				rp.peak = &pk;
+				rp.panel = &image->det->panels[0];
+
+				if ( checkrxy == 1 ) {
+					cgrad = x_gradient(refine, &rp,
+					          crystal_get_image(cr)->det,
+					          crystal_get_image(cr)->lambda,
+					          crystal_get_cell(cr));
+				} else {
+					cgrad = y_gradient(refine, &rp,
+					          crystal_get_image(cr)->det,
+					          crystal_get_image(cr)->lambda,
+					          crystal_get_cell(cr));
+				}
+			}
 
 			get_partial(refl, &r1, &r2, &p);
 
@@ -320,7 +322,7 @@ static double test_gradients(Crystal *cr, double incr_val, int refine,
 			vec2[n_line] = grad;
 			n_line++;
 
-			if ( (fabs(cgrad) < 5e-8) && (fabs(grad) < 5e-8) ) {
+			if ( (fabs(cgrad) < 5e-12) && (fabs(grad) < 5e-12) ) {
 				n_small++;
 				continue;
 			}
@@ -373,7 +375,7 @@ static double test_gradients(Crystal *cr, double incr_val, int refine,
 int main(int argc, char *argv[])
 {
 	struct image image;
-	const double incr_frac = 1.0/1000000.0;
+	const double incr_frac = 1.0/100000.0;
 	double incr_val;
 	double ax, ay, az;
 	double bx, by, bz;
@@ -381,12 +383,13 @@ int main(int argc, char *argv[])
 	UnitCell *cell;
 	Crystal *cr;
 	struct quaternion orientation;
-	int i;
 	int fail = 0;
 	int quiet = 0;
 	int plot = 0;
 	int c;
 	gsl_rng *rng;
+	UnitCell *rot;
+	double val;
 
 	const struct option longopts[] = {
 		{"quiet",       0, &quiet,        1},
@@ -439,77 +442,75 @@ int main(int argc, char *argv[])
 
 	rng = gsl_rng_alloc(gsl_rng_mt19937);
 
-	for ( i=0; i<2; i++ ) {
+	for ( checkrxy=0; checkrxy<3; checkrxy++ ) {
 
-		UnitCell *rot;
-		double val;
-		PartialityModel pmodel;
 
-		if ( i == 0 ) {
-			pmodel = PMODEL_SCSPHERE;
-			STATUS("Testing SCSphere model:\n");
-		} else if ( i == 1 ) {
-			pmodel = PMODEL_SCGAUSSIAN;
-			STATUS("Testing SCGaussian model.\n");
-		} else {
-			ERROR("WTF?\n");
-			return 1;
+		switch ( checkrxy ) {
+			case 0 :
+			STATUS("Excitation error:\n");
+			break;
+			case 1:
+			STATUS("x coordinate:\n");
+			break;
+			default:
+			case 2:
+			STATUS("y coordinate:\n");
+			break;
+			STATUS("WTF??\n");
+			break;
 		}
 
 		orientation = random_quaternion(rng);
 		rot = cell_rotate(cell, orientation);
 		crystal_set_cell(cr, rot);
 
-		cell_get_reciprocal(rot,
-			            &ax, &ay, &az, &bx, &by,
-			            &bz, &cx, &cy, &cz);
+		cell_get_reciprocal(rot, &ax, &ay, &az,
+		                    &bx, &by, &bz, &cx, &cy, &cz);
 
-		incr_val = incr_frac * image.div;
-		val =  test_gradients(cr, incr_val, GPARAM_DIV, "div", "div",
-		                      pmodel, quiet, plot);
-		if ( val < 0.99 ) fail = 1;
+		if ( checkrxy != 2 ) {
 
-		incr_val = incr_frac * crystal_get_profile_radius(cr);
-		val = test_gradients(cr, incr_val, GPARAM_R, "R", "R", pmodel,
-		                     quiet, plot);
-		if ( val < 0.99 ) fail = 1;
+			incr_val = incr_frac * ax;
+			val = test_gradients(cr, incr_val, GPARAM_ASX,
+			                     "ax*", "ax", quiet, plot);
+			if ( val < 0.99 ) fail = 1;
+			incr_val = incr_frac * bx;
+			val = test_gradients(cr, incr_val, GPARAM_BSX,
+			                     "bx*", "bx", quiet, plot);
+			if ( val < 0.99 ) fail = 1;
+			incr_val = incr_frac * cx;
+			val = test_gradients(cr, incr_val, GPARAM_CSX,
+			                     "cx*", "cx", quiet, plot);
+			if ( val < 0.99 ) fail = 1;
 
-		incr_val = incr_frac * ax;
-		val = test_gradients(cr, incr_val, GPARAM_ASX, "ax*", "x", pmodel,
-		                     quiet, plot);
-		if ( val < 0.99 ) fail = 1;
-		incr_val = incr_frac * bx;
-		val = test_gradients(cr, incr_val, GPARAM_BSX, "bx*", "x", pmodel,
-		                     quiet, plot);
-		if ( val < 0.99 ) fail = 1;
-		incr_val = incr_frac * cx;
-		val = test_gradients(cr, incr_val, GPARAM_CSX, "cx*", "x", pmodel,
-		                     quiet, plot);
-		if ( val < 0.99 ) fail = 1;
+		}
 
-		incr_val = incr_frac * ay;
-		val = test_gradients(cr, incr_val, GPARAM_ASY, "ay*", "y", pmodel,
-		                     quiet, plot);
-		if ( val < 0.99 ) fail = 1;
-		incr_val = incr_frac * by;
-		val = test_gradients(cr, incr_val, GPARAM_BSY, "by*", "y", pmodel,
-		                     quiet, plot);
-		if ( val < 0.99 ) fail = 1;
-		incr_val = incr_frac * cy;
-		val = test_gradients(cr, incr_val, GPARAM_CSY, "cy*", "y", pmodel,
-		                     quiet, plot);
-		if ( val < 0.99 ) fail = 1;
+		if ( checkrxy != 1 ) {
+
+			incr_val = incr_frac * ay;
+			val = test_gradients(cr, incr_val, GPARAM_ASY,
+			                     "ay*", "ay", quiet, plot);
+			if ( val < 0.99 ) fail = 1;
+			incr_val = incr_frac * by;
+			val = test_gradients(cr, incr_val, GPARAM_BSY,
+			                     "by*", "by", quiet, plot);
+			if ( val < 0.99 ) fail = 1;
+			incr_val = incr_frac * cy;
+			val = test_gradients(cr, incr_val, GPARAM_CSY,
+			                     "cy*", "cy", quiet, plot);
+			if ( val < 0.99 ) fail = 1;
+
+		}
 
 		incr_val = incr_frac * az;
-		val = test_gradients(cr, incr_val, GPARAM_ASZ, "az*", "z", pmodel,
+		val = test_gradients(cr, incr_val, GPARAM_ASZ, "az*", "az",
 		                     quiet, plot);
 		if ( val < 0.99 ) fail = 1;
 		incr_val = incr_frac * bz;
-		val = test_gradients(cr, incr_val, GPARAM_BSZ, "bz*", "z", pmodel,
+		val = test_gradients(cr, incr_val, GPARAM_BSZ, "bz*", "bz",
 		                     quiet, plot);
 		if ( val < 0.99 ) fail = 1;
 		incr_val = incr_frac * cz;
-		val = test_gradients(cr, incr_val, GPARAM_CSZ, "cz*", "z", pmodel,
+		val = test_gradients(cr, incr_val, GPARAM_CSZ, "cz*", "cz",
 		                     quiet, plot);
 		if ( val < 0.99 ) fail = 1;
 

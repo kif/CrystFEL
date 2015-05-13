@@ -1,7 +1,7 @@
 /*
- * hrs-scaling.h
+ * predict-refine.h
  *
- * Intensity scaling using generalised HRS target function
+ * Prediction refinement
  *
  * Copyright © 2012-2015 Deutsches Elektronen-Synchrotron DESY,
  *                       a research centre of the Helmholtz Association.
@@ -26,24 +26,20 @@
  *
  */
 
-#ifndef HRS_SCALING_H
-#define HRS_SCALING_H
+#ifndef PREDICT_REFINE_H
+#define PREDICT_REFINE_H
 
 
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
 
-
 #include "crystal.h"
-#include "reflist.h"
-#include "geometry.h"
 
-extern RefList *scale_intensities(Crystal **crystals, int n, int n_threads,
-                                  PartialityModel pmodel, int min_redundancy);
+struct image;
+
+extern int refine_prediction(struct image *image, Crystal *cr);
+extern void refine_radius(Crystal *cr, struct image *image);
 
 
-extern RefList *lsq_intensities(Crystal **crystals, int n, int n_threads,
-                                PartialityModel pmodel, int min_meas);
-
-#endif	/* HRS_SCALING_H */
+#endif	/* PREDICT_REFINE_H */

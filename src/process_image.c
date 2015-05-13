@@ -50,117 +50,29 @@
 #include "reflist-utils.h"
 #include "process_image.h"
 #include "integration.h"
+#include "predict-refine.h"
 
 
-static int cmpd2(const void *av, const void *bv)
+static void try_refine_autoR(struct image *image, Crystal *cr)
 {
-	double a, b;
+	double old_R, new_R;
+	char notes[1024];
 
-	a = *(double *)av;
-	b = *(double *)bv;
+	refine_radius(cr, image);
+	old_R = crystal_get_profile_radius(cr);
 
-	if ( fabs(a) < fabs(b) ) return -1;
-	return 1;
-}
-
-
-static double *excitation_errors(UnitCell *cell, ImageFeatureList *flist,
-                                 RefList *reflist, int *pnacc)
-{
-	int i;
-	const double min_dist = 0.25;
-	double *acc;
-	int n_acc = 0;
-	int n_notintegrated = 0;
-	int max_acc = 1024;
-
-	acc = malloc(max_acc*sizeof(double));
-	if ( acc == NULL ) {
-		ERROR("Allocation failed when refining radius!\n");
-		return NULL;
+	if ( refine_prediction(image, cr) ) {
+		crystal_set_user_flag(cr, 1);
+		return;
 	}
 
-	for ( i=0; i<image_feature_count(flist); i++ ) {
+	/* Estimate radius again with better geometry */
+	refine_radius(cr, image);
+	new_R = crystal_get_profile_radius(cr);
 
-		struct imagefeature *f;
-		double h, k, l, hd, kd, ld;
-
-		/* Assume all image "features" are genuine peaks */
-		f = image_get_feature(flist, i);
-		if ( f == NULL ) continue;
-
-		double ax, ay, az;
-		double bx, by, bz;
-		double cx, cy, cz;
-
-		cell_get_cartesian(cell,
-		                   &ax, &ay, &az, &bx, &by, &bz, &cx, &cy, &cz);
-
-		/* Decimal and fractional Miller indices of nearest
-		 * reciprocal lattice point */
-		hd = f->rx * ax + f->ry * ay + f->rz * az;
-		kd = f->rx * bx + f->ry * by + f->rz * bz;
-		ld = f->rx * cx + f->ry * cy + f->rz * cz;
-		h = lrint(hd);
-		k = lrint(kd);
-		l = lrint(ld);
-
-		/* Check distance */
-		if ( (fabs(h - hd) < min_dist)
-		  && (fabs(k - kd) < min_dist)
-		  && (fabs(l - ld) < min_dist) )
-		{
-			double rlow, rhigh, p;
-			Reflection *refl;
-
-			/* Dig out the reflection */
-			refl = find_refl(reflist, h, k, l);
-			if ( refl == NULL ) {
-				n_notintegrated++;
-				continue;
-			}
-
-			get_partial(refl, &rlow, &rhigh, &p);
-			acc[n_acc++] = fabs(rlow+rhigh)/2.0;
-			if ( n_acc == max_acc ) {
-				max_acc += 1024;
-				acc = realloc(acc, max_acc*sizeof(double));
-				if ( acc == NULL ) {
-					ERROR("Allocation failed during"
-					      " estimate_resolution!\n");
-					return NULL;
-				}
-			}
-		}
-
-	}
-
-	if ( n_acc < 3 ) {
-		STATUS("WARNING: Too few peaks to estimate profile radius.\n");
-		return NULL;
-	}
-
-	*pnacc = n_acc;
-	return acc;
-}
-
-
-static void refine_radius(Crystal *cr, ImageFeatureList *flist)
-{
-	int n = 0;
-	int n_acc;
-	double *acc;
-
-	acc = excitation_errors(crystal_get_cell(cr), flist,
-	                        crystal_get_reflections(cr), &n_acc);
-	if ( acc == NULL ) return;
-
-	qsort(acc, n_acc, sizeof(double), cmpd2);
-	n = n_acc/50;
-	if ( n < 2 ) n = 2; /* n_acc is always >= 2 */
-	crystal_set_profile_radius(cr, acc[(n_acc-1)-n]);
-
-	free(acc);
+	snprintf(notes, 1024, "predict_refine/R old = %.5f new = %.5f nm^-1",
+	                      old_R/1e9, new_R/1e9);
+	crystal_add_notes(cr, notes);
 }
 
 
@@ -177,6 +89,7 @@ void process_image(const struct index_args *iargs, struct pattern_args *pargs,
 	int r;
 	int ret;
 	char *rn;
+	int n_crystals_left;
 
 	image.features = NULL;
 	image.data = NULL;
@@ -281,9 +194,9 @@ void process_image(const struct index_args *iargs, struct pattern_args *pargs,
 	}
 	free(rn);
 
-	pargs->n_crystals = image.n_crystals;
 	for ( i=0; i<image.n_crystals; i++ ) {
 		crystal_set_image(image.crystals[i], &image);
+		crystal_set_user_flag(image.crystals[i], 0);
 	}
 
 	/* Set beam/crystal parameters */
@@ -310,36 +223,44 @@ void process_image(const struct index_args *iargs, struct pattern_args *pargs,
 		}
 	}
 
-	/* Integrate all the crystals at once - need all the crystals so that
-	 * overlaps can be detected. */
 	if ( iargs->fix_profile_r < 0.0 ) {
 
-		integrate_all_4(&image, iargs->int_meth, PMODEL_SCSPHERE,
-		                iargs->push_res,
-		                iargs->ir_inn, iargs->ir_mid, iargs->ir_out,
-		                INTDIAG_NONE, 0, 0, 0, results_pipe);
-
 		for ( i=0; i<image.n_crystals; i++ ) {
-			refine_radius(image.crystals[i], image.features);
-			reflist_free(crystal_get_reflections(image.crystals[i]));
+			if ( iargs->predict_refine ) {
+				try_refine_autoR(&image, image.crystals[i]);
+			} else {
+				refine_radius(image.crystals[i], &image);
+			}
 		}
 
-		integrate_all_4(&image, iargs->int_meth, PMODEL_SCSPHERE,
-		                iargs->push_res,
-		                iargs->ir_inn, iargs->ir_mid, iargs->ir_out,
-		                iargs->int_diag, iargs->int_diag_h,
-		                iargs->int_diag_k, iargs->int_diag_l,
-		                results_pipe);
 	} else {
 
-		integrate_all_4(&image, iargs->int_meth, PMODEL_SCSPHERE,
-		                iargs->push_res,
-		                iargs->ir_inn, iargs->ir_mid, iargs->ir_out,
-		                iargs->int_diag, iargs->int_diag_h,
-		                iargs->int_diag_k, iargs->int_diag_l,
-		                results_pipe);
+		for ( i=0; i<image.n_crystals; i++ ) {
+			if ( iargs->predict_refine ) {
+				refine_prediction(&image, image.crystals[i]);
+			}
+		}
 
 	}
+
+	/* If there are no crystals left, set the indexing flag back to zero */
+	n_crystals_left = 0;
+	for ( i=0; i<image.n_crystals; i++ ) {
+		if ( crystal_get_user_flag(image.crystals[i]) == 0 ) {
+			n_crystals_left++;
+		}
+	}
+	if ( n_crystals_left == 0 ) {
+		image.indexed_by = INDEXING_NONE;
+	}
+
+	/* Integrate! */
+	integrate_all_4(&image, iargs->int_meth, PMODEL_SCSPHERE,
+	                iargs->push_res,
+	                iargs->ir_inn, iargs->ir_mid, iargs->ir_out,
+	                iargs->int_diag, iargs->int_diag_h,
+	                iargs->int_diag_k, iargs->int_diag_l,
+	                results_pipe);
 
 	ret = write_chunk(st, &image, hdfile,
 	                  iargs->stream_peaks, iargs->stream_refls,
@@ -356,6 +277,14 @@ void process_image(const struct index_args *iargs, struct pattern_args *pargs,
 		STATUS("WARNING: %i implausibly negative reflection%s in %s "
 		       "%s\n", n, n>1?"s":"", image.filename,
 		       get_event_string(image.event));
+	}
+
+	/* Count crystals which are still good */
+	pargs->n_crystals = 0;
+	for ( i=0; i<image.n_crystals; i++ ) {
+		if ( crystal_get_user_flag(image.crystals[i]) == 0 ) {
+			pargs->n_crystals++;
+		}
 	}
 
 	for ( i=0; i<image.n_crystals; i++ ) {

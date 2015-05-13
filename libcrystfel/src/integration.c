@@ -1193,7 +1193,7 @@ static void integrate_prof2d_once(struct intcontext *ic, struct peak_box *bx,
 		get_detector_pos(bx->refl, &pfs, &pss);
 		pfs += bx->offs_fs;
 		pss += bx->offs_ss;
-		set_detector_pos(bx->refl, 0.0, pfs, pss);
+		set_detector_pos(bx->refl, pfs, pss);
 
 		if ( bx->intensity < -5.0*bx->sigma ) {
 			ic->n_implausible++;
@@ -1397,6 +1397,7 @@ static void integrate_rings_once(Reflection *refl, struct image *image,
 		r = check_box(ic, bx, &saturated);
 		if ( !r ) {
 			fit_bg(ic, bx);
+			if ( !bg_ok(bx) ) r = 1;
 		}
 		bx->offs_fs = 0.0;
 		bx->offs_ss = 0.0;
@@ -1447,7 +1448,7 @@ static void integrate_rings_once(Reflection *refl, struct image *image,
 	/* Update position */
 	pfs += bx->offs_fs;
 	pss += bx->offs_ss;
-	set_detector_pos(refl, 0.0, pfs, pss);
+	set_detector_pos(refl, pfs, pss);
 
 	if ( get_int_diag(ic, refl) ) show_peak_box(ic, bx, results_pipe);
 
